@@ -1,0 +1,186 @@
+# =============================================================================
+# Formula bumper for glnc
+# =============================================================================
+#
+# Receives a `repository_dispatch` event from the main glnc repo's release
+# workflow (event type: `glnc-released`) and rewrites Formula/glnc.rb in place
+# with the new version + per-arch sha256s sourced from the release's
+# SHA256SUMS file. Commits straight to main — this is a tap, no PR overhead.
+#
+# Required secrets:
+#   - GITHUB_TOKEN (built-in): used by actions/checkout for the push back to
+#     main. The default token has contents:write on this repo, which is all
+#     we need.
+#
+# No third-party PATs are required for this workflow itself. The PAT used to
+# *fire* the dispatch lives in the main glnc repo's secrets
+# (HOMEBREW_TAP_DISPATCH_TOKEN); see that repo's release.yml.
+# =============================================================================
+
+name: Bump formula
+
+on:
+  repository_dispatch:
+    types: [glnc-released]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to bump to (without leading v), e.g. 1.2.3"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: bump-formula
+  cancel-in-progress: false
+
+jobs:
+  bump:
+    name: Update Formula/glnc.rb
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout tap
+        uses: actions/checkout@v4
+
+      - name: Resolve version
+        id: ver
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${{ github.event_name }}" == "repository_dispatch" ]]; then
+            VERSION="${{ github.event.client_payload.version }}"
+          else
+            VERSION="${{ inputs.version }}"
+          fi
+          # Strip a leading 'v' if a caller accidentally sent one.
+          VERSION="${VERSION#v}"
+          # Reject prereleases (e.g. 1.2.3-rc.1) — stable formula must not be
+          # clobbered by a prerelease via manual workflow_dispatch.
+          if [[ ! "${VERSION}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Invalid or prerelease version: '${VERSION}' (stable X.Y.Z only)"
+            exit 1
+          fi
+          echo "version=${VERSION}" >> "${GITHUB_OUTPUT}"
+          echo "Bumping to ${VERSION}"
+
+      - name: Download SHA256SUMS from release
+        shell: bash
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          URL="https://github.com/aryarahimi1/glnc/releases/download/v${VERSION}/SHA256SUMS"
+          echo "Fetching ${URL}"
+          # Retry a few times — GitHub release asset CDN can lag a few seconds
+          # behind the release publish event.
+          for i in 1 2 3 4 5; do
+            if curl -fsSL --retry 3 -o SHA256SUMS "${URL}"; then
+              break
+            fi
+            echo "Attempt ${i} failed, sleeping..."
+            sleep 10
+          done
+          test -s SHA256SUMS
+          echo "----- SHA256SUMS -----"
+          cat SHA256SUMS
+
+      - name: Parse per-asset sha256s
+        id: sums
+        shell: bash
+        run: |
+          set -euo pipefail
+          extract() {
+            local asset="$1"
+            local hash
+            hash="$(awk -v a="${asset}" '$2 == a || $2 == "*"a {print $1; exit}' SHA256SUMS)"
+            if [[ -z "${hash}" ]]; then
+              echo "::error::Missing sha256 for ${asset} in SHA256SUMS"
+              exit 1
+            fi
+            echo "${hash}"
+          }
+
+          DARWIN_ARM64="$(extract glnc-darwin-arm64.tar.gz)"
+          DARWIN_X64="$(extract glnc-darwin-x64.tar.gz)"
+          LINUX_ARM64="$(extract glnc-linux-arm64.tar.gz)"
+          LINUX_X64="$(extract glnc-linux-x64.tar.gz)"
+
+          echo "darwin_arm64=${DARWIN_ARM64}" >> "${GITHUB_OUTPUT}"
+          echo "darwin_x64=${DARWIN_X64}"     >> "${GITHUB_OUTPUT}"
+          echo "linux_arm64=${LINUX_ARM64}"   >> "${GITHUB_OUTPUT}"
+          echo "linux_x64=${LINUX_X64}"       >> "${GITHUB_OUTPUT}"
+
+      - name: Rewrite Formula/glnc.rb
+        shell: bash
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+          DARWIN_ARM64: ${{ steps.sums.outputs.darwin_arm64 }}
+          DARWIN_X64: ${{ steps.sums.outputs.darwin_x64 }}
+          LINUX_ARM64: ${{ steps.sums.outputs.linux_arm64 }}
+          LINUX_X64: ${{ steps.sums.outputs.linux_x64 }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import os
+          import re
+          from pathlib import Path
+
+          path = Path("Formula/glnc.rb")
+          text = path.read_text()
+
+          version = os.environ["VERSION"]
+          sums = {
+              "glnc-darwin-arm64.tar.gz": os.environ["DARWIN_ARM64"],
+              "glnc-darwin-x64.tar.gz":   os.environ["DARWIN_X64"],
+              "glnc-linux-arm64.tar.gz":  os.environ["LINUX_ARM64"],
+              "glnc-linux-x64.tar.gz":    os.environ["LINUX_X64"],
+          }
+
+          # Replace the top-level `version "X.Y.Z"` line.
+          text, n = re.subn(
+              r'^(\s*version\s+)"[^"]+"',
+              lambda m: f'{m.group(1)}"{version}"',
+              text,
+              count=1,
+              flags=re.MULTILINE,
+          )
+          assert n == 1, "did not find version line"
+
+          # For each asset, find its url line and replace the *next* sha256.
+          for asset, digest in sums.items():
+              pattern = re.compile(
+                  r'(url\s+"[^"]*' + re.escape(asset) + r'"[^\n]*\n'
+                  r'(?:[^\n]*\n)*?'
+                  r'\s*sha256\s+)"[^"]+"',
+              )
+              text, n = pattern.subn(
+                  lambda m, d=digest: f'{m.group(1)}"{d}"',
+                  text,
+                  count=1,
+              )
+              assert n == 1, f"did not patch sha256 for {asset}"
+
+          path.write_text(text)
+          print(text)
+          PY
+
+      - name: Commit and push
+        shell: bash
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          set -euo pipefail
+          git config user.name  "glnc-bot"
+          git config user.email "glnc-bot@users.noreply.github.com"
+
+          if git diff --quiet -- Formula/glnc.rb; then
+            echo "No changes to Formula/glnc.rb — nothing to commit."
+            exit 0
+          fi
+
+          git add Formula/glnc.rb
+          git commit -m "glnc ${VERSION}"
+          git push origin HEAD:main
