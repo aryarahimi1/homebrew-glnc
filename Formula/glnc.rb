@@ -11,20 +11,20 @@
 class Glnc < Formula
   desc "Blockchain inspection CLI for EVM, Bitcoin, and Solana"
   homepage "https://github.com/aryarahimi1/glnc"
-  version "1.0.0"
+  version "1.0.1"
   license "MIT"
 
   on_macos do
     on_arm do
       url "https://github.com/aryarahimi1/glnc/releases/download/v#{version}/glnc-darwin-arm64.tar.gz"
       # sha256 from SHA256SUMS, line: "<hash>  glnc-darwin-arm64.tar.gz"
-      sha256 "a543aad8e12d9e75f6b7032bd736b589df4aa5ec93f6548bf68f0dcbbc27a979"
+      sha256 "5220d9a79d8e02476a1e9d8177f4bbc67311073a14814652b1a6746bb83274e4"
     end
 
     on_intel do
       url "https://github.com/aryarahimi1/glnc/releases/download/v#{version}/glnc-darwin-x64.tar.gz"
       # sha256 from SHA256SUMS, line: "<hash>  glnc-darwin-x64.tar.gz"
-      sha256 "68c205ab7f2bf7b6c9a237b9b388491bf67bf566899c6fc2dd5e5ebb6cf8dc88"
+      sha256 "fd339237b894e5177cb80eee7cdd9c7a059ab173bf5186fa59d411026d07f49e"
     end
   end
 
@@ -32,13 +32,13 @@ class Glnc < Formula
     on_arm do
       url "https://github.com/aryarahimi1/glnc/releases/download/v#{version}/glnc-linux-arm64.tar.gz"
       # sha256 from SHA256SUMS, line: "<hash>  glnc-linux-arm64.tar.gz"
-      sha256 "0a1f7473ac4b69cfcf1cf91aca912d6d950272ae138fd6a6ea76ccc717d7057f"
+      sha256 "55b65409a9d2b2e6bc799228f242a2182d0e176858bd3e8199808f2e2459c359"
     end
 
     on_intel do
       url "https://github.com/aryarahimi1/glnc/releases/download/v#{version}/glnc-linux-x64.tar.gz"
       # sha256 from SHA256SUMS, line: "<hash>  glnc-linux-x64.tar.gz"
-      sha256 "b7fa75993da2f84f20b6df7eb6e51112011095f46606816dbf723d4401667dfa"
+      sha256 "99d4c480195236374c0d75bfa45cf7b96aa378a6b60c00ef029e52fd7051d37b"
     end
   end
 
